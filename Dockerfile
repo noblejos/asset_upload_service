@@ -1,19 +1,13 @@
-# Stage 1: Build the application
-FROM golang:1.20 AS builder
-# add environment variable to docker file
+# Stage 1: Build
+FROM golang:1.23 AS builder
+
 WORKDIR /app
 
-# Copy go.mod and go.sum and download dependencies
 COPY go.mod go.sum ./
 RUN go mod download
 
-# Copy the rest of the source code
-COPY . .
-
-# Build the application
-# CGO_ENABLED=0 is important for creating a static binary
-# GOOS=linux ensures the binary is built for Linux, which is common for Docker containers
-RUN CGO_ENABLED=0 GOOS=linux go build -o /asset_upload_service .
+COPY . ./
+RUN CGO_ENABLED=0 GOOS=linux go build -v -o /asset_upload_service .
 
 # Stage 2: Run the application
 FROM alpine:latest
