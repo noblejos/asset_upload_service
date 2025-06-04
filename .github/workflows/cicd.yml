@@ -1,4 +1,4 @@
-name: Deploy Node Application
+name: Deploy GO Application
 
 on:
   push:
@@ -18,7 +18,7 @@ jobs:
           username: iroghamajoseph
           password: Toyotapicnic1.
       - name: Build docker image
-        run: docker build -t iroghamajoseph/asset_upload
+        run: docker build -t iroghamajoseph/asset_upload .
       - name: Publish image to docker hub
         run: docker push iroghamajoseph/asset_upload:latest
 
