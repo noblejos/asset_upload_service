@@ -1,6 +1,6 @@
 # Stage 1: Build the application
 FROM golang:1.20 AS builder
-
+# add environment variable to docker file
 WORKDIR /app
 
 # Copy go.mod and go.sum and download dependencies
@@ -22,6 +22,11 @@ WORKDIR /app
 
 # Copy the built executable from the builder stage
 COPY --from=builder /asset_upload_service .
+
+ENV AWS_ACCESS_KEY_ID=AKIA6GSNG3DIUKYAESHO
+ENV AWS_SECRET_ACCESS_KEY=qzubVbDCFjy03ckkrXLbUcWEm41IqpWSnIpoXrw0
+ENV AWS_REGION=eu-north-1
+ENV AWS_S3_BUCKET=qatapolt
 
 # Expose the port your application listens on (assuming 8080)
 EXPOSE 8080

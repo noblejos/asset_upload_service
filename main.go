@@ -1,12 +1,22 @@
 package main
 
 import (
+	"log"
+
 	"github.com/asset_upload_service/handlers"
 	"github.com/gin-gonic/gin"
 	"github.com/sirupsen/logrus"
+
+	"github.com/joho/godotenv"
 )
 
 func main() {
+
+	err := godotenv.Load() // default loads .env in current directory
+	if err != nil {
+		log.Fatal("Error loading .env file")
+	}
+
 	// Initialize Gin router
 	router := gin.Default()
 

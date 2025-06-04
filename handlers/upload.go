@@ -37,10 +37,10 @@ func (h *UploadHandler) HandleUpload(c *gin.Context) {
 
 	// Get AWS credentials from form
 	awsConfig := models.UploadRequest{
-		AWSAccessKeyID:     "AKIA6GSNG3DIUKYAESHO",
-		AWSSecretAccessKey: "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",
-		AWSRegion:          "eu-north-1",
-		S3BucketName:       "qatapolt",
+		AWSAccessKeyID:     os.Getenv("AWS_ACCESS_KEY_ID"),
+		AWSSecretAccessKey: os.Getenv("AWS_SECRET_ACCESS_KEY"),
+		AWSRegion:          os.Getenv("AWS_REGION"),
+		S3BucketName:       os.Getenv("AWS_S3_BUCKET"),
 	}
 
 	// Validate AWS credentials
