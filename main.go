@@ -2,19 +2,21 @@ package main
 
 import (
 	"log"
+	"os"
 
 	"github.com/asset_upload_service/handlers"
 	"github.com/gin-gonic/gin"
-	"github.com/sirupsen/logrus"
-
 	"github.com/joho/godotenv"
+	"github.com/sirupsen/logrus"
 )
 
 func main() {
-
-	err := godotenv.Load() // default loads .env in current directory
-	if err != nil {
-		log.Fatal("Error loading .env file")
+	// Only load .env file in development
+	if os.Getenv("ENV") != "production" {
+		err := godotenv.Load()
+		if err != nil {
+			log.Println("Warning: could not load .env file (only needed for local dev)")
+		}
 	}
 
 	// Initialize Gin router
