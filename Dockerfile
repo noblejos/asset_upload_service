@@ -12,13 +12,15 @@ RUN CGO_ENABLED=0 GOOS=linux go build -v -o /asset_upload_service .
 # Stage 2: Run the application
 FROM alpine:latest
 
+# Install ffmpeg and libc6-compat for Go binaries
+RUN apk update && \
+    apk add --no-cache ffmpeg libc6-compat
+
 WORKDIR /app
 
 # Copy the built executable from the builder stage
 COPY --from=builder /asset_upload_service .
 
-# Expose the port your application listens on (assuming 8080)
 EXPOSE 8080
 
-# Command to run the executable
 CMD ["/app/asset_upload_service"]
