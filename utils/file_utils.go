@@ -116,3 +116,38 @@ func calculateAspectRatio(width, height int) string {
 	divisor := gcd(width, height)
 	return fmt.Sprintf("%d:%d", width/divisor, height/divisor)
 }
+
+type Dimensions struct {
+	Width    int
+	Height   int
+	Duration float64
+}
+
+func GetVideoMetadata(filePath string) (Dimensions, error) {
+	// Get video metadata using ffprobe
+	_, err := ffmpeg.Probe(filePath)
+	if err != nil {
+		return Dimensions{}, fmt.Errorf("failed to probe video: %w", err)
+	}
+
+	// Parse width and height
+	cmd := exec.Command("ffprobe", "-v", "error", "-select_streams", "v:0",
+		"-show_entries", "stream=width,height,duration", "-of", "csv=p=0", filePath)
+	out, err := cmd.Output()
+	if err != nil {
+
+		return Dimensions{}, fmt.Errorf("failed to get video metadata: %w", err)
+	}
+
+	// Output format: width,height,duration
+	parts := strings.Split(strings.TrimSpace(string(out)), ",")
+	if len(parts) < 3 {
+		return Dimensions{}, fmt.Errorf("unexpected ffprobe output format")
+	}
+
+	width, _ := strconv.Atoi(parts[0])
+	height, _ := strconv.Atoi(parts[1])
+	duration, _ := strconv.ParseFloat(parts[2], 64)
+
+	return Dimensions{width, height, duration}, nil
+}
