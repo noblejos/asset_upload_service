@@ -4,6 +4,8 @@ import (
 	"bytes"
 	"fmt"
 	"math"
+	"strconv"
+	"sync"
 
 	"github.com/disintegration/imaging"
 	ffmpeg "github.com/u2takey/ffmpeg-go"
@@ -82,40 +84,104 @@ func (r *Resizer) ResizeImage(buffer []byte, formatName string) ([]byte, error) 
 	return buf.Bytes(), nil
 }
 
+// func (r *Resizer) ProcessVideo(inputPath, outputPath, format string) error {
+// 	var targetFormat MediaFormat
+// 	for _, f := range formats {
+// 		if f.FormattedRatio == format {
+// 			targetFormat = f
+// 			break
+// 		}
+// 	}
+
+// 	if targetFormat.FormattedRatio == "" {
+// 		return fmt.Errorf("invalid format name: %s", format)
+// 	}
+
+// 	vf := fmt.Sprintf("scale='max(1080,iw)':-1:force_original_aspect_ratio=decrease")
+
+// 	args := ffmpeg.KwArgs{
+// 		"vf":       vf,
+// 		"c:v":      "libx264",
+// 		"crf":      "23",
+// 		"preset":   "fast",
+// 		"movflags": "faststart",
+// 		"pix_fmt":  "yuv420p",
+// 	}
+
+// 	// Capture FFmpeg stderr for debugging
+// 	errBuf := bytes.NewBuffer(nil)
+// 	err := ffmpeg.Input(inputPath).
+// 		Output(outputPath, args).
+// 		OverWriteOutput().
+// 		WithErrorOutput(errBuf).
+// 		Run()
+
+// 	if err != nil {
+// 		return fmt.Errorf("ffmpeg error: %v\nLogs:\n%s", err, errBuf.String())
+// 	}
+// 	return nil
+// }
+
 func (r *Resizer) ProcessVideo(inputPath, outputPath, format string) error {
-	var targetFormat MediaFormat
-	for _, f := range formats {
-		if f.FormattedRatio == format {
-			targetFormat = f
-			break
-		}
+	targetFormat, err := r.validateFormat(format)
+	if err != nil {
+		return err
 	}
 
-	if targetFormat.FormattedRatio == "" {
-		return fmt.Errorf("invalid format name: %s", format)
-	}
-
-	vf := fmt.Sprintf("scale='max(1080,iw)':-1:force_original_aspect_ratio=decrease")
+	// FFmpeg scale filter: resize to fit within WxH, no crop, no bars
+	scaleFilter := fmt.Sprintf("scale=%d:%d:force_original_aspect_ratio=decrease", targetFormat.Width, targetFormat.Height)
 
 	args := ffmpeg.KwArgs{
-		"vf":       vf,
+		"vf":       scaleFilter,
 		"c:v":      "libx264",
-		"crf":      "23",
-		"preset":   "fast",
+		"crf":      strconv.Itoa(r.calculateCRF()),
+		"preset":   "medium", // or "slow"
 		"movflags": "faststart",
 		"pix_fmt":  "yuv420p",
+		"threads":  "0",
 	}
 
-	// Capture FFmpeg stderr for debugging
-	errBuf := bytes.NewBuffer(nil)
-	err := ffmpeg.Input(inputPath).
+	// Use buffer pool for error capture
+	errBuf := pool.Get().(*bytes.Buffer)
+	errBuf.Reset()
+	defer pool.Put(errBuf)
+
+	err = ffmpeg.Input(inputPath).
 		Output(outputPath, args).
 		OverWriteOutput().
 		WithErrorOutput(errBuf).
 		Run()
 
 	if err != nil {
-		return fmt.Errorf("ffmpeg error: %v\nLogs:\n%s", err, errBuf.String())
+		return fmt.Errorf("ffmpeg error: %w\nLogs:\n%s", err, errBuf.String())
 	}
 	return nil
+}
+
+// Check for available hardware acceleration
+func (r *Resizer) checkHardwareAcceleration() bool {
+	// Implement actual hardware detection
+	return false // Default to false, implement based on your environment
+}
+
+// Buffer pool to reduce allocations
+var pool = sync.Pool{
+	New: func() interface{} {
+		return bytes.NewBuffer(make([]byte, 0, 1024))
+	},
+}
+
+func (r *Resizer) calculateCRF() int {
+
+	return 28
+}
+
+// Helper: Validate and get the target format
+func (r *Resizer) validateFormat(format string) (MediaFormat, error) {
+	for _, f := range formats {
+		if f.FormattedRatio == format {
+			return f, nil
+		}
+	}
+	return MediaFormat{}, fmt.Errorf("invalid format name: %s", format)
 }
