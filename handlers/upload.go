@@ -152,11 +152,19 @@ func (h *UploadHandler) HandleUpload(c *gin.Context) {
 			return
 		}
 
+		processedDim, err := utils.GetVideoMetadata(outputPath)
+		if err != nil {
+			c.JSON(http.StatusInternalServerError, models.UploadResponse{
+				Message: "Failed to get image dimensions: " + err.Error(),
+			})
+			return
+		}
+
 		fileInfo = &models.FileInfo{
 			FileType:      "video",
-			Width:         dimensions.Width,
-			Height:        dimensions.Height,
-			OriginalRatio: float64(dimensions.Width) / float64(dimensions.Height),
+			Width:         processedDim.Width,
+			Height:        processedDim.Height,
+			OriginalRatio: float64(processedDim.Width) / float64(processedDim.Height),
 			MatchedFormat: format,
 		}
 	} else {

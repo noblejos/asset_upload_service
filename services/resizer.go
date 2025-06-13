@@ -3,6 +3,7 @@ package services
 import (
 	"bytes"
 	"fmt"
+	"log"
 	"math"
 	"strconv"
 	"sync"
@@ -128,9 +129,11 @@ func (r *Resizer) ProcessVideo(inputPath, outputPath, format string) error {
 		return err
 	}
 
+	log.Printf("Processing video: %s to %s with format %s", inputPath, outputPath, targetFormat.FormattedRatio)
 	// FFmpeg scale filter: resize to fit within WxH, no crop, no bars
-	scaleFilter := fmt.Sprintf("scale=%d:%d:force_original_aspect_ratio=decrease", targetFormat.Width, targetFormat.Height)
+	// scaleFilter := fmt.Sprintf("scale=%d:%d:force_original_aspect_ratio=decrease", targetFormat.Width, targetFormat.Height)
 
+	scaleFilter := "scale=1080:-1"
 	args := ffmpeg.KwArgs{
 		"vf":       scaleFilter,
 		"c:v":      "libx264",
