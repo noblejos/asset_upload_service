@@ -138,7 +138,7 @@ func (r *Resizer) ProcessVideo(inputPath, outputPath, format string) error {
 		"preset":   "medium", // or "slow"
 		"movflags": "faststart",
 		"pix_fmt":  "yuv420p",
-		"threads":  "0",
+		"threads":  "1",
 	}
 
 	// Use buffer pool for error capture
