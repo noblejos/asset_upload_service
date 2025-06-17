@@ -5,7 +5,6 @@ import (
 	"fmt"
 	"log"
 	"math"
-	"strconv"
 	"sync"
 
 	"github.com/disintegration/imaging"
@@ -132,15 +131,11 @@ func (r *Resizer) ProcessVideo(inputPath, outputPath, format string) error {
 	log.Printf("Processing video: %s to %s with format %s", inputPath, outputPath, targetFormat.FormattedRatio)
 	// FFmpeg scale filter: resize to fit within WxH, no crop, no bars
 	// scaleFilter := fmt.Sprintf("scale=%d:%d:force_original_aspect_ratio=decrease", targetFormat.Width, targetFormat.Height)
-
-	scaleFilter := "scale=1080:-1"
 	args := ffmpeg.KwArgs{
-		"vf":       scaleFilter,
-		"c:v":      "libx264",
-		"crf":      strconv.Itoa(r.calculateCRF()),
-		"preset":   "medium", // or "slow"
+		// No video filters applied; pass through as-is
+		"c:v":      "copy",
+		"c:a":      "copy",
 		"movflags": "faststart",
-		"pix_fmt":  "yuv420p",
 		"threads":  "1",
 	}
 
