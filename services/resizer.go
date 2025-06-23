@@ -24,7 +24,7 @@ var (
 		{"square", 1080, 1080, 1.0, "1:1"},        // 1:1
 		{"portrait", 1080, 1350, 0.8, "4:5"},      // 4:5
 		{"story", 1080, 1920, 0.5625, "9:16"},     // 9:16
-		{"landscape", 1080, 608, 1.776, "1:91:1"}, // 1.91:1
+		{"landscape", 1080, 608, 1.776, "1.91:1"}, // 1.91:1
 	}
 )
 
@@ -84,44 +84,6 @@ func (r *Resizer) ResizeImage(buffer []byte, formatName string) ([]byte, error) 
 	return buf.Bytes(), nil
 }
 
-// func (r *Resizer) ProcessVideo(inputPath, outputPath, format string) error {
-// 	var targetFormat MediaFormat
-// 	for _, f := range formats {
-// 		if f.FormattedRatio == format {
-// 			targetFormat = f
-// 			break
-// 		}
-// 	}
-
-// 	if targetFormat.FormattedRatio == "" {
-// 		return fmt.Errorf("invalid format name: %s", format)
-// 	}
-
-// 	vf := fmt.Sprintf("scale='max(1080,iw)':-1:force_original_aspect_ratio=decrease")
-
-// 	args := ffmpeg.KwArgs{
-// 		"vf":       vf,
-// 		"c:v":      "libx264",
-// 		"crf":      "23",
-// 		"preset":   "fast",
-// 		"movflags": "faststart",
-// 		"pix_fmt":  "yuv420p",
-// 	}
-
-// 	// Capture FFmpeg stderr for debugging
-// 	errBuf := bytes.NewBuffer(nil)
-// 	err := ffmpeg.Input(inputPath).
-// 		Output(outputPath, args).
-// 		OverWriteOutput().
-// 		WithErrorOutput(errBuf).
-// 		Run()
-
-// 	if err != nil {
-// 		return fmt.Errorf("ffmpeg error: %v\nLogs:\n%s", err, errBuf.String())
-// 	}
-// 	return nil
-// }
-
 func (r *Resizer) ProcessVideo(inputPath, outputPath, format string) error {
 	targetFormat, err := r.validateFormat(format)
 	if err != nil {
@@ -129,17 +91,27 @@ func (r *Resizer) ProcessVideo(inputPath, outputPath, format string) error {
 	}
 
 	log.Printf("Processing video: %s to %s with format %s", inputPath, outputPath, targetFormat.FormattedRatio)
-	// FFmpeg scale filter: resize to fit within WxH, no crop, no bars
-	// scaleFilter := fmt.Sprintf("scale=%d:%d:force_original_aspect_ratio=decrease", targetFormat.Width, targetFormat.Height)
+
+	scaleFilter := fmt.Sprintf("scale='min(%d,iw)':'min(%d,ih)':force_original_aspect_ratio=decrease,pad=%d:%d:(%d-iw*min(1\\,min(%d/iw\\,%d/ih)))/2:(%d-ih*min(1\\,min(%d/iw\\,%d/ih)))/2", targetFormat.Width, targetFormat.Height, targetFormat.Width, targetFormat.Height, targetFormat.Width, targetFormat.Width, targetFormat.Height, targetFormat.Height, targetFormat.Width, targetFormat.Height)
+
+	// Try hardware acceleration if available
+	var videoCodec string
+	if r.checkHardwareAcceleration() {
+		videoCodec = "h264_nvenc" // NVIDIA GPU example; adjust for your hardware
+	} else {
+		videoCodec = "libx264"
+	}
+
 	args := ffmpeg.KwArgs{
-		// No video filters applied; pass through as-is
-		"c:v":      "copy",
-		"c:a":      "copy",
+		"vf":       scaleFilter,
+		"c:v":      videoCodec,
+		"crf":      fmt.Sprintf("%d", r.calculateCRF()),
+		"preset":   "ultrafast",
+		"c:a":      "aac",
 		"movflags": "faststart",
 		"threads":  "1",
 	}
 
-	// Use buffer pool for error capture
 	errBuf := pool.Get().(*bytes.Buffer)
 	errBuf.Reset()
 	defer pool.Put(errBuf)
