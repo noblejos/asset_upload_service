@@ -3,12 +3,11 @@ package services
 import (
 	"bytes"
 	"fmt"
-	"log"
 	"math"
+	"os"
 	"sync"
 
 	"github.com/disintegration/imaging"
-	ffmpeg "github.com/u2takey/ffmpeg-go"
 )
 
 type MediaFormat struct {
@@ -85,45 +84,14 @@ func (r *Resizer) ResizeImage(buffer []byte, formatName string) ([]byte, error) 
 }
 
 func (r *Resizer) ProcessVideo(inputPath, outputPath, format string) error {
-	targetFormat, err := r.validateFormat(format)
+	// Bypass FFmpeg processing: just copy the input file to the output path
+	input, err := os.ReadFile(inputPath)
 	if err != nil {
-		return err
+		return fmt.Errorf("failed to read input video: %w", err)
 	}
-
-	log.Printf("Processing video: %s to %s with format %s", inputPath, outputPath, targetFormat.FormattedRatio)
-
-	scaleFilter := fmt.Sprintf("scale='min(%d,iw)':'min(%d,ih)':force_original_aspect_ratio=decrease,pad=%d:%d:(%d-iw*min(1\\,min(%d/iw\\,%d/ih)))/2:(%d-ih*min(1\\,min(%d/iw\\,%d/ih)))/2", targetFormat.Width, targetFormat.Height, targetFormat.Width, targetFormat.Height, targetFormat.Width, targetFormat.Width, targetFormat.Height, targetFormat.Height, targetFormat.Width, targetFormat.Height)
-
-	// Try hardware acceleration if available
-	var videoCodec string
-	if r.checkHardwareAcceleration() {
-		videoCodec = "h264_nvenc" // NVIDIA GPU example; adjust for your hardware
-	} else {
-		videoCodec = "libx264"
-	}
-
-	args := ffmpeg.KwArgs{
-		"vf":       scaleFilter,
-		"c:v":      videoCodec,
-		"crf":      fmt.Sprintf("%d", r.calculateCRF()),
-		"preset":   "ultrafast",
-		"c:a":      "aac",
-		"movflags": "faststart",
-		"threads":  "1",
-	}
-
-	errBuf := pool.Get().(*bytes.Buffer)
-	errBuf.Reset()
-	defer pool.Put(errBuf)
-
-	err = ffmpeg.Input(inputPath).
-		Output(outputPath, args).
-		OverWriteOutput().
-		WithErrorOutput(errBuf).
-		Run()
-
+	err = os.WriteFile(outputPath, input, 0644)
 	if err != nil {
-		return fmt.Errorf("ffmpeg error: %w\nLogs:\n%s", err, errBuf.String())
+		return fmt.Errorf("failed to write output video: %w", err)
 	}
 	return nil
 }
