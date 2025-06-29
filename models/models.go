@@ -22,9 +22,9 @@ type FileInfo struct {
 	AspectRatio   string  `json:"aspect_ratio,omitempty"`
 	MatchedFormat string  `json:"matched_format,omitempty"`
 	Duration      float64 `json:"duration,omitempty"`
-	VideoCodec    string  `json:"video_codec,omitempty"`
-	AudioCodec    string  `json:"audio_codec,omitempty"`
-	FrameRate     float64 `json:"frame_rate,omitempty"`
+	// VideoCodec    string  `json:"video_codec,omitempty"`
+	// AudioCodec    string  `json:"audio_codec,omitempty"`
+	// FrameRate     float64 `json:"frame_rate,omitempty"`
 }
 
 type UploadResponse struct {

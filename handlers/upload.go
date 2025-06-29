@@ -11,13 +11,13 @@ import (
 	"strings"
 
 	"github.com/asset_upload_service/models"
+	"github.com/asset_upload_service/services"
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/aws/credentials"
 	"github.com/aws/aws-sdk-go/aws/session"
 	"github.com/aws/aws-sdk-go/service/s3/s3manager"
 	"github.com/gin-gonic/gin"
 
-	"github.com/asset_upload_service/services"
 	"github.com/asset_upload_service/utils"
 )
 
@@ -27,17 +27,16 @@ func NewUploadHandler() *UploadHandler {
 	return &UploadHandler{}
 }
 
-func (h *UploadHandler) HandleUpload(c *gin.Context) {
-	// Initialize resizer with quality setting (85 is good for balance of quality/size)
-	resizer := services.NewResizer(85)
-
-	// Parse form data (10MB max)
+func (h *UploadHandler) HandleUpload(c *gin.Context) { // Parse form data (10MB max)
 	if err := c.Request.ParseMultipartForm(10 << 20); err != nil {
 		c.JSON(http.StatusBadRequest, models.UploadResponse{
 			Message: "Failed to parse multipart form: " + err.Error(),
 		})
 		return
 	}
+
+	// Create resizer just for format detection, not for actual resizing
+	resizer := services.NewResizer(90)
 
 	// Get AWS credentials from form/env
 	awsConfig := models.UploadRequest{
@@ -74,14 +73,12 @@ func (h *UploadHandler) HandleUpload(c *gin.Context) {
 		})
 		return
 	}
-
-	// Process based on file type
+	// Get file type without processing
 	fileType := http.DetectContentType(fileBytes)
-	var processedBytes []byte
 	var fileInfo *models.FileInfo
 
 	if strings.HasPrefix(fileType, "image/") {
-		// Process image
+		// Just get image dimensions without processing
 		dimensions, err := getImageDimensions(fileBytes)
 		if err != nil {
 			c.JSON(http.StatusInternalServerError, models.UploadResponse{
@@ -90,28 +87,21 @@ func (h *UploadHandler) HandleUpload(c *gin.Context) {
 			return
 		}
 
-		format := resizer.DetectFormat(dimensions.Width, dimensions.Height)
-		fmt.Println(format)
+		// Calculate original aspect ratio
+		ratio := float64(dimensions.Width) / float64(dimensions.Height)
 
-		processedBytes, err = resizer.ResizeImage(fileBytes, format)
-		if err != nil {
-			c.JSON(http.StatusInternalServerError, models.UploadResponse{
-				Message: "Failed to resize image: " + err.Error(),
-			})
-			return
-		}
-
-		fmt.Println(processedBytes)
+		// Get the closest standard aspect ratio without resizing
+		standardFormat := resizer.DetectFormat(dimensions.Width, dimensions.Height)
 
 		fileInfo = &models.FileInfo{
 			FileType:      "image",
 			Width:         dimensions.Width,
 			Height:        dimensions.Height,
-			OriginalRatio: float64(dimensions.Width) / float64(dimensions.Height),
-			MatchedFormat: format,
+			OriginalRatio: ratio,
+			MatchedFormat: standardFormat,
 		}
 	} else if strings.HasPrefix(fileType, "video/") {
-		// Save temp file for video processing
+		// Save temp file for video metadata extraction only
 		tempPath := filepath.Join(os.TempDir(), header.Filename)
 		if err := os.WriteFile(tempPath, fileBytes, 0644); err != nil {
 			c.JSON(http.StatusInternalServerError, models.UploadResponse{
@@ -121,75 +111,63 @@ func (h *UploadHandler) HandleUpload(c *gin.Context) {
 		}
 		defer os.Remove(tempPath)
 
+		// Just get video metadata without processing
 		dimensions, err := utils.GetVideoMetadata(tempPath)
 		if err != nil {
-			c.JSON(http.StatusInternalServerError, models.UploadResponse{
-				Message: "Failed to get image dimensions: " + err.Error(),
-			})
-			return
-		}
+			// If we can't get metadata, continue with basic info
+			fileInfo = &models.FileInfo{
+				FileType: "video",
+			}
+		} else {
+			// Calculate original aspect ratio
+			ratio := float64(dimensions.Width) / float64(dimensions.Height)
 
-		format := resizer.DetectFormat(dimensions.Width, dimensions.Height)
-		fmt.Print(format)
+			// Get the closest standard aspect ratio without resizing
+			standardFormat := resizer.DetectFormat(dimensions.Width, dimensions.Height)
 
-		// Process video
-		outputPath := tempPath + "_processed.mp4"
-		if err := resizer.ProcessVideo(tempPath, outputPath, format); err != nil {
-			c.JSON(http.StatusInternalServerError, models.UploadResponse{
-				Message: "Failed to process video: " + err.Error(),
-			})
-			return
-		}
-		defer os.Remove(outputPath)
-
-		// Read processed video
-		processedBytes, err = os.ReadFile(outputPath)
-		fmt.Print(err)
-		if err != nil {
-			c.JSON(http.StatusInternalServerError, models.UploadResponse{
-				Message: "Failed to read processed video: " + err.Error(),
-			})
-			return
-		}
-
-		processedDim, err := utils.GetVideoMetadata(outputPath)
-		if err != nil {
-			c.JSON(http.StatusInternalServerError, models.UploadResponse{
-				Message: "Failed to get image dimensions: " + err.Error(),
-			})
-			return
-		}
-
-		fileInfo = &models.FileInfo{
-			FileType:      "video",
-			Width:         processedDim.Width,
-			Height:        processedDim.Height,
-			OriginalRatio: float64(processedDim.Width) / float64(processedDim.Height),
-			MatchedFormat: format,
+			fileInfo = &models.FileInfo{
+				FileType:      "video",
+				Width:         dimensions.Width,
+				Height:        dimensions.Height,
+				OriginalRatio: ratio,
+				MatchedFormat: standardFormat,
+				Duration:      dimensions.Duration,
+				// VideoCodec:    dimensions.VideoCodec,
+				// AudioCodec:    dimensions.AudioCodec,
+				// FrameRate:     dimensions.FrameRate,
+			}
 		}
 	} else {
-		c.JSON(http.StatusBadRequest, models.UploadResponse{
-			Message: "Unsupported file type",
-		})
-		return
+		// Allow other file types to be uploaded without processing
+		fileInfo = &models.FileInfo{
+			FileType: fileType,
+		}
 	}
-
 	// Upload to S3
-	// Create a temporary file to store processed bytes
+	// Create a temporary file to store file bytes
 	tempFile, err := os.CreateTemp("", "upload-*")
 	if err != nil {
+		c.JSON(http.StatusInternalServerError, models.UploadResponse{
+			Message: "Failed to create temporary file: " + err.Error(),
+		})
 		return
 	}
 	defer os.Remove(tempFile.Name())
 	defer tempFile.Close()
 
-	// Write processed bytes to temp file
-	if _, err := tempFile.Write(processedBytes); err != nil {
+	// Write original file bytes to temp file
+	if _, err := tempFile.Write(fileBytes); err != nil {
+		c.JSON(http.StatusInternalServerError, models.UploadResponse{
+			Message: "Failed to write to temporary file: " + err.Error(),
+		})
 		return
 	}
 
 	// Seek to beginning of file for reading
 	if _, err := tempFile.Seek(0, 0); err != nil {
+		c.JSON(http.StatusInternalServerError, models.UploadResponse{
+			Message: "Failed to seek temporary file: " + err.Error(),
+		})
 		return
 	}
 
@@ -200,20 +178,19 @@ func (h *UploadHandler) HandleUpload(c *gin.Context) {
 		})
 		return
 	}
-
 	// Prepare response
 	response := models.UploadResponse{
 		FileName:      header.Filename,
 		FileURL:       fileURL,
 		FileType:      fileInfo.FileType,
-		FileSize:      int64(len(processedBytes)),
+		FileSize:      int64(len(fileBytes)),
 		Width:         fileInfo.Width,
 		Height:        fileInfo.Height,
 		OriginalRatio: fileInfo.OriginalRatio,
 		MatchedFormat: fileInfo.MatchedFormat,
 		AspectRatio:   fileInfo.MatchedFormat,
 		Duration:      fileInfo.Duration,
-		Message:       "File processed and uploaded successfully",
+		Message:       "File uploaded successfully without processing",
 	}
 
 	c.JSON(http.StatusOK, response)
