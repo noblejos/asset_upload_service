@@ -15,6 +15,7 @@ import (
 	"github.com/aws/aws-sdk-go/aws/session"
 	"github.com/aws/aws-sdk-go/service/s3/s3manager"
 	"github.com/gin-gonic/gin"
+	"github.com/sirupsen/logrus"
 
 	"github.com/asset_upload_service/utils"
 )
@@ -26,7 +27,18 @@ func NewUploadHandler() *UploadHandler {
 }
 
 func (h *UploadHandler) HandleUpload(c *gin.Context) { // Parse form data (10MB max)
+	// Log Content-Type header to debug issues with multipart form parsing
+	contentType := c.GetHeader("Content-Type")
+	logrus.Infof("Received request with Content-Type: %s", contentType)
+
+	// Handle special case when content type might have issues with boundary
+	if !strings.Contains(contentType, "boundary=") {
+		logrus.Warnf("Content-Type doesn't contain boundary parameter, trying to handle anyway")
+	}
+
+	// Try to parse the multipart form
 	if err := c.Request.ParseMultipartForm(10 << 20); err != nil {
+		logrus.Errorf("Failed to parse multipart form: %v", err)
 		c.JSON(http.StatusBadRequest, models.UploadResponse{
 			Message: "Failed to parse multipart form: " + err.Error(),
 		})
@@ -107,17 +119,29 @@ func (h *UploadHandler) HandleUpload(c *gin.Context) { // Parse form data (10MB 
 		// Get path for metadata extraction (will be either original or processed)
 		metadataPath := tempPath
 		var wasProcessed bool
-
 		// Process video: detect quality, convert to low quality, cut to 59 seconds, convert to MP4
 		processedPath, processed, err := utils.ProcessVideo(tempPath)
 		if err != nil {
-			c.JSON(http.StatusInternalServerError, models.UploadResponse{
-				Message: "Failed to process video: " + err.Error(),
-			})
-			return
-		}
+			// Log the error for debugging
+			fmt.Printf("Video processing error: %v\n", err)
 
-		wasProcessed = processed
+			// Check if it's a format we can handle without processing
+			if strings.HasSuffix(strings.ToLower(header.Filename), ".mp4") {
+				// If it's already MP4 but processing failed, we can try to use the original
+				fmt.Println("Skipping processing for MP4 file that couldn't be converted")
+				wasProcessed = false
+			} else {
+				// For other formats, return error to client
+				c.JSON(http.StatusInternalServerError, models.UploadResponse{
+					Message:  "Failed to process video: " + err.Error(),
+					FileType: fileType,
+					FileName: header.Filename,
+				})
+				return
+			}
+		} else {
+			wasProcessed = processed
+		}
 
 		// If processing happened, make sure to clean up the processed file too
 		if wasProcessed {
