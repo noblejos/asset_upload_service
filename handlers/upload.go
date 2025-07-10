@@ -1,9 +1,7 @@
 package handlers
 
 import (
-	"bytes"
 	"fmt"
-	"image"
 	"io"
 	"net/http"
 	"os"
@@ -35,10 +33,7 @@ func (h *UploadHandler) HandleUpload(c *gin.Context) { // Parse form data (10MB 
 		return
 	}
 
-	// Create resizer just for format detection, not for actual resizing
 	resizer := services.NewResizer(90)
-
-	// Get AWS credentials from form/env
 	awsConfig := models.UploadRequest{
 		AWSAccessKeyID:     os.Getenv("AWS_ACCESS_KEY_ID"),
 		AWSSecretAccessKey: os.Getenv("AWS_SECRET_ACCESS_KEY"),
@@ -77,9 +72,8 @@ func (h *UploadHandler) HandleUpload(c *gin.Context) { // Parse form data (10MB 
 	fileType := http.DetectContentType(fileBytes)
 	var fileInfo *models.FileInfo
 
-	if strings.HasPrefix(fileType, "image/") {
-		// Just get image dimensions without processing
-		dimensions, err := getImageDimensions(fileBytes)
+	if strings.HasPrefix(fileType, "image/") { // Just get image dimensions without processing
+		dimensions, err := utils.GetImageDimensions(fileBytes)
 		if err != nil {
 			c.JSON(http.StatusInternalServerError, models.UploadResponse{
 				Message: "Failed to get image dimensions: " + err.Error(),
@@ -100,8 +94,8 @@ func (h *UploadHandler) HandleUpload(c *gin.Context) { // Parse form data (10MB 
 			OriginalRatio: ratio,
 			MatchedFormat: standardFormat,
 		}
-	} else if strings.HasPrefix(fileType, "video/") {
-		// Save temp file for video metadata extraction only
+	} else if strings.HasPrefix(fileType, "video/") || utils.IsVideoFile(header.Filename) {
+		// Save temp file for video metadata extraction and potential conversion
 		tempPath := filepath.Join(os.TempDir(), header.Filename)
 		if err := os.WriteFile(tempPath, fileBytes, 0644); err != nil {
 			c.JSON(http.StatusInternalServerError, models.UploadResponse{
@@ -110,9 +104,42 @@ func (h *UploadHandler) HandleUpload(c *gin.Context) { // Parse form data (10MB 
 			return
 		}
 		defer os.Remove(tempPath)
+		// Get path for metadata extraction (will be either original or processed)
+		metadataPath := tempPath
+		var wasProcessed bool
 
-		// Just get video metadata without processing
-		dimensions, err := utils.GetVideoMetadata(tempPath)
+		// Process video: detect quality, convert to low quality, cut to 59 seconds, convert to MP4
+		processedPath, processed, err := utils.ProcessVideo(tempPath)
+		if err != nil {
+			c.JSON(http.StatusInternalServerError, models.UploadResponse{
+				Message: "Failed to process video: " + err.Error(),
+			})
+			return
+		}
+
+		wasProcessed = processed
+
+		// If processing happened, make sure to clean up the processed file too
+		if wasProcessed {
+			defer os.Remove(processedPath)
+
+			// Read the processed file to update fileBytes
+			fileBytes, err = os.ReadFile(processedPath)
+			if err != nil {
+				c.JSON(http.StatusInternalServerError, models.UploadResponse{
+					Message: "Failed to read processed video: " + err.Error(),
+				})
+				return
+			}
+
+			// Update the filename to have .mp4 extension
+			header.Filename = strings.TrimSuffix(header.Filename, filepath.Ext(header.Filename)) + "_processed.mp4"
+			fileType = "video/mp4" // Update the file type since we processed it
+			metadataPath = processedPath
+		}
+
+		// Get metadata from the video (original or converted)
+		dimensions, err := utils.GetVideoMetadata(metadataPath)
 		if err != nil {
 			// If we can't get metadata, continue with basic info
 			fileInfo = &models.FileInfo{
@@ -177,8 +204,17 @@ func (h *UploadHandler) HandleUpload(c *gin.Context) { // Parse form data (10MB 
 			Message: "Failed to upload to S3: " + err.Error(),
 		})
 		return
+	} // Prepare response
+	message := "File uploaded successfully without processing"
+	// Track video processing for message
+	originalExt := c.Request.FormValue("originalExt")
+	if strings.Contains(header.Filename, "_processed") && strings.HasSuffix(header.Filename, ".mp4") {
+		message = "Video was processed: quality reduced, cut to 59 seconds, and converted to MP4 format"
+	} else if strings.HasSuffix(header.Filename, ".mp4") &&
+		(originalExt != "" || strings.HasPrefix(fileInfo.FileType, "video/")) {
+		message = "Video converted to MP4 and uploaded successfully"
 	}
-	// Prepare response
+
 	response := models.UploadResponse{
 		FileName:      header.Filename,
 		FileURL:       fileURL,
@@ -190,7 +226,7 @@ func (h *UploadHandler) HandleUpload(c *gin.Context) { // Parse form data (10MB 
 		MatchedFormat: fileInfo.MatchedFormat,
 		AspectRatio:   fileInfo.MatchedFormat,
 		Duration:      fileInfo.Duration,
-		Message:       "File uploaded successfully without processing",
+		Message:       message,
 	}
 
 	c.JSON(http.StatusOK, response)
@@ -227,10 +263,4 @@ func (h *UploadHandler) uploadToS3(file *os.File, fileName string, config models
 	return result.Location, nil
 }
 
-func getImageDimensions(buffer []byte) (struct{ Width, Height int }, error) {
-	img, _, err := image.DecodeConfig(bytes.NewReader(buffer))
-	if err != nil {
-		return struct{ Width, Height int }{}, err
-	}
-	return struct{ Width, Height int }{img.Width, img.Height}, nil
-}
+// getImageDimensions moved to utils package to avoid duplication
