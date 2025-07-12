@@ -45,10 +45,14 @@ func ProcessVideoWithBitrateReduction(inputPath string) (string, bool, error) {
 		logrus.Warnf("Could not stat file: %v", err)
 	} else {
 		logrus.Infof("Processing file: %s, size: %d bytes", inputPath, fileInfo.Size())
-	} // Get video metadata including dimensions
-	_, err = GetVideoMetadata(inputPath)
+	}
+	// Get video metadata including dimensions - not needed since we're preserving dimensions
+	// But we'll log it for debugging purposes
+	dimensions, err := GetVideoMetadata(inputPath)
 	if err != nil {
 		logrus.Warnf("Failed to get video metadata: %v, proceeding with conversion anyway", err)
+	} else if dimensions.Width > 0 && dimensions.Height > 0 {
+		logrus.Infof("Original video dimensions: %dx%d, preserving original resolution", dimensions.Width, dimensions.Height)
 	}
 
 	// Generate output path
@@ -69,7 +73,6 @@ func ProcessVideoWithBitrateReduction(inputPath string) (string, bool, error) {
 		logrus.Errorf("FFmpeg probe failed: %v, output: %s", probeErr, string(probeOutput))
 		return "", false, fmt.Errorf("failed to process video - input file may be corrupted: %w", probeErr)
 	}
-
 	// Process video with ffmpeg to reduce bitrate while maintaining original resolution
 	logrus.Infof("Starting video processing with bitrate reduction (original resolution maintained)")
 
@@ -97,13 +100,12 @@ func ProcessVideoWithBitrateReduction(inputPath string) (string, bool, error) {
 		logrus.Errorf("Failed to process video: %v", err)
 		// Try a more basic conversion as a fallback
 		logrus.Infof("Trying fallback conversion with simpler settings")
-
 		// Fallback with simpler settings but still maintaining resolution
 		fallbackCmd := exec.Command(ffmpegPath,
 			"-i", inputPath,
 			"-t", "59",
 			"-c:v", "libx264",
-			"-preset", "ultrafast",
+			"-preset", "ultrafast", // Faster encoding for compatibility
 			"-crf", "30", // Even higher CRF for more bitrate reduction
 			"-c:a", "aac",
 			"-b:a", "96k", // Lower audio bitrate
@@ -116,8 +118,7 @@ func ProcessVideoWithBitrateReduction(inputPath string) (string, bool, error) {
 			logrus.Errorf("Fallback conversion also failed: %v, output: %s", fallbackErr, string(fallbackOutput))
 			return "", false, fmt.Errorf("failed to process video (all methods): %w", fallbackErr)
 		}
-
-		logrus.Infof("Fallback conversion succeeded")
+		logrus.Infof("Fallback conversion with bitrate reduction succeeded")
 		return outputPath, true, nil
 	}
 
