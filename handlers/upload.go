@@ -250,7 +250,7 @@ func (h *UploadHandler) HandleUpload(c *gin.Context) { // Parse form data (10MB 
 		Height:        fileInfo.Height,
 		OriginalRatio: fileInfo.OriginalRatio,
 		MatchedFormat: fileInfo.MatchedFormat,
-		AspectRatio:   fileInfo.AspectRatio,
+		AspectRatio:   fileInfo.OriginalRatio,
 		Duration:      fileInfo.Duration,
 		Message:       message,
 	}
