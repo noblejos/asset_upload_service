@@ -32,4 +32,4 @@ jobs:
   #     - name: Delete Existing Container
   #       run: echo joseph@2024 | sudo -S docker rm -f asset_upload
   #     - name: Run docker container
-  #       run: echo joseph@2024 | sudo -S docker run --memory=3g  --cpus=1  --env-file /home/gama/asset-upload/.env -d -p 8080:8080 --name asset_upload iroghamajoseph/asset_upload:latest
+  #       run: echo joseph@2024 | sudo -S docker run  --env-file /home/rendcore/asset-upload/.env -d -p 8080:8080 --name asset_upload iroghamajoseph/asset_upload:latest

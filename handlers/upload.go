@@ -83,6 +83,7 @@ func (h *UploadHandler) HandleUpload(c *gin.Context) { // Parse form data (10MB 
 	// Get file type without processing
 	fileType := http.DetectContentType(fileBytes)
 	var fileInfo *models.FileInfo
+	var message string
 
 	if strings.HasPrefix(fileType, "image/") { // Just get image dimensions without processing
 		dimensions, err := utils.GetImageDimensions(fileBytes)
@@ -99,11 +100,15 @@ func (h *UploadHandler) HandleUpload(c *gin.Context) { // Parse form data (10MB 
 		// Get the closest standard aspect ratio without resizing
 		standardFormat := resizer.DetectFormat(dimensions.Width, dimensions.Height)
 
+		num, den := utils.FloatToRatio(ratio, 100)
+
+		ratioStr := fmt.Sprintf("%d:%d", num, den)
+
 		fileInfo = &models.FileInfo{
 			FileType:      "image",
 			Width:         dimensions.Width,
 			Height:        dimensions.Height,
-			OriginalRatio: ratio,
+			OriginalRatio: ratioStr, // Use the float64 ratio value here
 			MatchedFormat: standardFormat,
 		}
 	} else if strings.HasPrefix(fileType, "video/") || utils.IsVideoFile(header.Filename) {
@@ -115,12 +120,11 @@ func (h *UploadHandler) HandleUpload(c *gin.Context) { // Parse form data (10MB 
 			})
 			return
 		}
-		defer os.Remove(tempPath)
-		// Get path for metadata extraction (will be either original or processed)
+		defer os.Remove(tempPath) // Get path for metadata extraction (will be either original or processed)
 		metadataPath := tempPath
 		var wasProcessed bool
-		// Process video: detect quality, convert to low quality, cut to 59 seconds, convert to MP4
-		processedPath, processed, err := utils.ProcessVideo(tempPath)
+		// Process video: reduce bitrate while maintaining original resolution
+		processedPath, processed, err := utils.ProcessVideoWithBitrateReduction(tempPath)
 		if err != nil {
 			// Log the error for debugging
 			fmt.Printf("Video processing error: %v\n", err)
@@ -173,23 +177,22 @@ func (h *UploadHandler) HandleUpload(c *gin.Context) { // Parse form data (10MB 
 			// Calculate original aspect ratio
 			ratio := float64(dimensions.Width) / float64(dimensions.Height)
 
-			// Get the closest standard aspect ratio without resizing
 			standardFormat := resizer.DetectFormat(dimensions.Width, dimensions.Height)
+
+			num, den := utils.FloatToRatio(ratio, 100)
+
+			ratioStr := fmt.Sprintf("%d:%d", num, den)
 
 			fileInfo = &models.FileInfo{
 				FileType:      "video",
 				Width:         dimensions.Width,
 				Height:        dimensions.Height,
-				OriginalRatio: ratio,
+				OriginalRatio: ratioStr,
 				MatchedFormat: standardFormat,
 				Duration:      dimensions.Duration,
-				// VideoCodec:    dimensions.VideoCodec,
-				// AudioCodec:    dimensions.AudioCodec,
-				// FrameRate:     dimensions.FrameRate,
 			}
 		}
 	} else {
-		// Allow other file types to be uploaded without processing
 		fileInfo = &models.FileInfo{
 			FileType: fileType,
 		}
@@ -228,12 +231,11 @@ func (h *UploadHandler) HandleUpload(c *gin.Context) { // Parse form data (10MB 
 			Message: "Failed to upload to S3: " + err.Error(),
 		})
 		return
-	} // Prepare response
-	message := "File uploaded successfully without processing"
+	} // Prepare response	message := "File uploaded successfully without processing"
 	// Track video processing for message
 	originalExt := c.Request.FormValue("originalExt")
 	if strings.Contains(header.Filename, "_processed") && strings.HasSuffix(header.Filename, ".mp4") {
-		message = "Video was processed: quality reduced, cut to 59 seconds, and converted to MP4 format"
+		message = "Video was processed: bitrate reduced while maintaining original resolution, cut to 59 seconds, and converted to MP4 format"
 	} else if strings.HasSuffix(header.Filename, ".mp4") &&
 		(originalExt != "" || strings.HasPrefix(fileInfo.FileType, "video/")) {
 		message = "Video converted to MP4 and uploaded successfully"
@@ -247,8 +249,8 @@ func (h *UploadHandler) HandleUpload(c *gin.Context) { // Parse form data (10MB 
 		Width:         fileInfo.Width,
 		Height:        fileInfo.Height,
 		OriginalRatio: fileInfo.OriginalRatio,
-		MatchedFormat: fileInfo.MatchedFormat,
-		AspectRatio:   fileInfo.MatchedFormat,
+		MatchedFormat: fileInfo.OriginalRatio,
+		AspectRatio:   fileInfo.AspectRatio,
 		Duration:      fileInfo.Duration,
 		Message:       message,
 	}
@@ -288,3 +290,37 @@ func (h *UploadHandler) uploadToS3(file *os.File, fileName string, config models
 }
 
 // getImageDimensions moved to utils package to avoid duplication
+
+// GetVideoAspectRatioHandler retrieves the aspect ratio from a video URL (typically on S3)
+// func (h *UploadHandler) GetVideoAspectRatioHandler(c *gin.Context) {
+// 	// Get the video URL from the query parameter
+// 	videoURL := c.Query("url")
+// 	if videoURL == "" {
+// 		c.JSON(http.StatusBadRequest, gin.H{
+// 			"error": "Missing required 'url' parameter",
+// 		})
+// 		return
+// 	}
+
+// 	// Validate the URL
+// 	_, err := url.ParseRequestURI(videoURL)
+// 	if err != nil {
+// 		c.JSON(http.StatusBadRequest, gin.H{
+// 			"error": "Invalid URL format",
+// 		})
+// 		return
+// 	}
+
+// 	// Get the aspect ratio from the URL
+// 	aspectRatio, err := utils.GetVideoAspectRatioFromURL(videoURL)
+// 	if err != nil {
+// 		logrus.Errorf("Failed to get aspect ratio: %v", err)
+// 		c.JSON(http.StatusInternalServerError, gin.H{
+// 			"error": fmt.Sprintf("Failed to get aspect ratio: %v", err),
+// 		})
+// 		return
+// 	}
+
+// 	// Return the aspect ratio
+// 	c.JSON(http.StatusOK, aspectRatio)
+// }

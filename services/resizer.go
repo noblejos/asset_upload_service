@@ -27,6 +27,11 @@ var (
 	}
 )
 
+// GetFormats returns the list of supported media formats
+func GetFormats() []MediaFormat {
+	return formats
+}
+
 type Resizer struct {
 	Quality int
 }

@@ -14,11 +14,20 @@ type MediaFormat struct {
 	AspectRatio float64 `json:"aspect_ratio"`
 }
 
+type VideoAspectRatio struct {
+	Width          int     `json:"width"`
+	Height         int     `json:"height"`
+	OriginalRatio  float64 `json:"original_ratio_float"`
+	FormattedRatio string  `json:"formatted_ratio"`
+	StandardFormat string  `json:"standard_format"`
+	Duration       float64 `json:"duration,omitempty"`
+}
+
 type FileInfo struct {
 	FileType      string  `json:"file_type"`
 	Width         int     `json:"width,omitempty"`
 	Height        int     `json:"height,omitempty"`
-	OriginalRatio float64 `json:"original_ratio,omitempty"`
+	OriginalRatio string  `json:"original_ratio,omitempty"`
 	AspectRatio   string  `json:"aspect_ratio,omitempty"`
 	MatchedFormat string  `json:"matched_format,omitempty"`
 	Duration      float64 `json:"duration,omitempty"`
@@ -34,7 +43,7 @@ type UploadResponse struct {
 	FileSize      int64   `json:"file_size"`
 	Width         int     `json:"width,omitempty"`
 	Height        int     `json:"height,omitempty"`
-	OriginalRatio float64 `json:"original_ratio,omitempty"`
+	OriginalRatio string  `json:"original_ratio,omitempty"`
 	AspectRatio   string  `json:"aspect_ratio,omitempty"`
 	MatchedFormat string  `json:"matched_format,omitempty"`
 	Duration      float64 `json:"duration,omitempty"`

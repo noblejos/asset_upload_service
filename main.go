@@ -17,17 +17,25 @@ func main() {
 		if err != nil {
 			log.Println("Warning: could not load .env file (only needed for local dev)")
 		}
-	} // Initialize Gin router
+	}
+
 	router := gin.Default()
 
 	// Configure router with larger body size limit for multipart forms
-	router.MaxMultipartMemory = 10 << 20 // 10 MiB
-
+	// router.MaxMultipartMemory = 10 << 20 // 10 MiB
 	// Configure CORS
 	router.Use(func(c *gin.Context) {
 		c.Writer.Header().Set("Access-Control-Allow-Origin", "*")
 		c.Writer.Header().Set("Access-Control-Allow-Methods", "POST, GET, OPTIONS, PUT, DELETE")
-		c.Writer.Header().Set("Access-Control-Allow-Headers", "Content-Type, Content-Length, Accept-Encoding, Authorization")
+		c.Writer.Header().Set("Access-Control-Allow-Headers", "Content-Type, Content-Length, Accept-Encoding, Authorization, Accept")
+		c.Writer.Header().Set("Access-Control-Expose-Headers", "Content-Length, Content-Type")
+		c.Writer.Header().Set("Access-Control-Allow-Credentials", "true")
+
+		// Log request headers for debugging
+		logrus.Infof("Request method: %s, path: %s", c.Request.Method, c.Request.URL.Path)
+		for name, values := range c.Request.Header {
+			logrus.Infof("Header %s: %s", name, values)
+		}
 
 		if c.Request.Method == "OPTIONS" {
 			c.AbortWithStatus(204)
@@ -35,16 +43,15 @@ func main() {
 		}
 
 		c.Next()
-	})
-	// Set up routes
+	}) // Set up routes
+
 	uploadHandler := handlers.NewUploadHandler()
-	// rawUploadHandler := handlers.NewRawUploadHandler()
 
 	// Standard multipart form upload endpoint
 	router.POST("/upload", uploadHandler.HandleUpload)
 
-	// Raw binary upload endpoint - doesn't require multipart form data
-	// router.POST("/upload/raw", rawUploadHandler.HandleRawUpload)
+	// Endpoint to retrieve video aspect ratio from AWS S3
+	router.GET("/video/aspect-ratio", uploadHandler.GetVideoAspectRatioHandler)
 
 	// Start server
 	port := ":8080"
