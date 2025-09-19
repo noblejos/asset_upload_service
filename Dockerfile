@@ -13,7 +13,7 @@ RUN CGO_ENABLED=0 GOOS=linux go build -v -o /asset_upload_service .
 FROM debian:stable-slim
 
 RUN apt-get update && \
-    apt-get install -y ffmpeg && \
+    apt-get install -y ffmpeg ca-certificates && \
     rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app

@@ -2,6 +2,7 @@ package handlers
 
 import (
 	"crypto/tls"
+	"crypto/x509"
 	"fmt"
 	"io"
 	"net/http"
@@ -260,20 +261,72 @@ func (h *UploadHandler) HandleUpload(c *gin.Context) { // Parse form data (10MB 
 }
 
 func (h *UploadHandler) uploadToS3(file *os.File, fileName string, config models.UploadRequest) (string, error) {
-	// Create a custom HTTP client with TLS configuration to handle certificate issues on Windows
+	// Create a production-ready HTTP client with robust TLS configuration
+	var rootCAs *x509.CertPool
+	
+	// Try to load system root CAs, with fallback for Docker environments
+	if systemRoots, err := x509.SystemCertPool(); err != nil {
+		logrus.Warnf("Failed to load system cert pool, using default: %v", err)
+		rootCAs = nil // Use Go's built-in root CAs as fallback
+	} else {
+		rootCAs = systemRoots
+	}
+
+	// Additional certificate handling for Docker/production environments
+	if certFile := os.Getenv("SSL_CERT_FILE"); certFile != "" {
+		if certData, err := os.ReadFile(certFile); err == nil {
+			if rootCAs == nil {
+				rootCAs = x509.NewCertPool()
+			}
+			rootCAs.AppendCertsFromPEM(certData)
+			logrus.Infof("Loaded additional certificates from %s", certFile)
+		} else {
+			logrus.Warnf("Failed to load certificate file %s: %v", certFile, err)
+		}
+	}
+
+	// Check for common certificate bundle locations in Docker containers
+	certPaths := []string{
+		"/etc/ssl/certs/ca-certificates.crt", // Debian/Ubuntu
+		"/etc/pki/tls/certs/ca-bundle.crt",   // RHEL/CentOS
+		"/etc/ssl/ca-bundle.pem",             // OpenSUSE
+	}
+	
+	for _, certPath := range certPaths {
+		if _, err := os.Stat(certPath); err == nil {
+			if certData, err := os.ReadFile(certPath); err == nil {
+				if rootCAs == nil {
+					rootCAs = x509.NewCertPool()
+				}
+				rootCAs.AppendCertsFromPEM(certData)
+				logrus.Infof("Loaded certificates from %s", certPath)
+				break
+			}
+		}
+	}
+
 	httpClient := &http.Client{
 		Transport: &http.Transport{
 			TLSClientConfig: &tls.Config{
 				InsecureSkipVerify: false,
-				// Use system's root CAs and handle certificate verification properly
-				RootCAs:            nil, // nil means use system's root CA set
-				ServerName:         "",  // Let Go handle server name verification
+				RootCAs:            rootCAs,
+				ServerName:         "", // Let Go handle server name verification
 				MinVersion:         tls.VersionTLS12,
 				MaxVersion:         tls.VersionTLS13,
+				// Additional settings for production environments
+				CipherSuites: []uint16{
+					tls.TLS_ECDHE_RSA_WITH_AES_256_GCM_SHA384,
+					tls.TLS_ECDHE_RSA_WITH_CHACHA20_POLY1305,
+					tls.TLS_ECDHE_RSA_WITH_AES_128_GCM_SHA256,
+				},
 			},
-			// Additional transport settings for better connectivity
-			DisableKeepAlives: false,
-			IdleConnTimeout:   30 * time.Second,
+			// Optimized transport settings for production
+			DisableKeepAlives:     false,
+			IdleConnTimeout:       30 * time.Second,
+			TLSHandshakeTimeout:   10 * time.Second,
+			ExpectContinueTimeout: 1 * time.Second,
+			MaxIdleConns:          100,
+			MaxIdleConnsPerHost:   10,
 		},
 	}
 
