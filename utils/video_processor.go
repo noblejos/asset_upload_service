@@ -15,8 +15,13 @@ import (
 // ProcessVideoWithBitrateReduction compresses a video by reducing its bitrate without changing resolution
 func ProcessVideoWithBitrateReduction(inputPath string) (string, bool, error) {
 	// First check if it's a video
-	if !IsVideoFile(inputPath) {
-		// Use filetype library to check if it's a video
+	isVideo := false
+
+	// Check by file extension
+	if IsVideoFile(inputPath) {
+		isVideo = true
+	} else {
+		// Use filetype library for deeper detection
 		file, err := os.Open(inputPath)
 		if err != nil {
 			logrus.Errorf("Failed to open file for type detection: %v", err)
@@ -32,12 +37,21 @@ func ProcessVideoWithBitrateReduction(inputPath string) (string, bool, error) {
 		}
 
 		kind, err := filetype.Match(head)
-		if err != nil || !strings.HasPrefix(kind.MIME.Value, "video/") {
-			// Not a video or unrecognized format
-			logrus.Infof("Not a video or unrecognized format. MIME type: %s", kind.MIME.Value)
-			return inputPath, false, nil
+		if err == nil && strings.HasPrefix(kind.MIME.Value, "video/") {
+			isVideo = true
+			logrus.Infof("Detected video file by MIME type: %s", kind.MIME.Value)
 		}
 	}
+
+	if !isVideo {
+		// Not a video or unrecognized format
+		logrus.Infof("Not a video or unrecognized format")
+		return inputPath, false, nil
+	}
+
+	// Check if the file is already an MP4
+	isMP4 := strings.ToLower(filepath.Ext(inputPath)) == ".mp4"
+	logrus.Infof("File is %s, will %s to MP4", filepath.Base(inputPath), map[bool]string{true: "already in", false: "be converted"}[isMP4])
 
 	// Log file information
 	fileInfo, err := os.Stat(inputPath)
@@ -46,8 +60,7 @@ func ProcessVideoWithBitrateReduction(inputPath string) (string, bool, error) {
 	} else {
 		logrus.Infof("Processing file: %s, size: %d bytes", inputPath, fileInfo.Size())
 	}
-	// Get video metadata including dimensions - not needed since we're preserving dimensions
-	// But we'll log it for debugging purposes
+
 	dimensions, err := GetVideoMetadata(inputPath)
 	if err != nil {
 		logrus.Warnf("Failed to get video metadata: %v, proceeding with conversion anyway", err)
@@ -64,7 +77,6 @@ func ProcessVideoWithBitrateReduction(inputPath string) (string, bool, error) {
 		logrus.Errorf("FFmpeg not found: %v", err)
 		return "", false, fmt.Errorf("ffmpeg is not installed: %w", err)
 	}
-	logrus.Infof("Using FFmpeg at path: %s", ffmpegPath)
 
 	// Try a simpler ffmpeg command first to check if the input file is valid
 	probeCmd := exec.Command(ffmpegPath, "-i", inputPath, "-f", "null", "-")
@@ -73,6 +85,7 @@ func ProcessVideoWithBitrateReduction(inputPath string) (string, bool, error) {
 		logrus.Errorf("FFmpeg probe failed: %v, output: %s", probeErr, string(probeOutput))
 		return "", false, fmt.Errorf("failed to process video - input file may be corrupted: %w", probeErr)
 	}
+
 	// Process video with ffmpeg to reduce bitrate while maintaining original resolution
 	logrus.Infof("Starting video processing with bitrate reduction (original resolution maintained)")
 
@@ -81,10 +94,9 @@ func ProcessVideoWithBitrateReduction(inputPath string) (string, bool, error) {
 		Output(outputPath, ffmpeg.KwArgs{
 			"t":        "59",         // Cut to 59 seconds
 			"c:v":      "libx264",    // Use H.264 codec for video
-			"preset":   "medium",     // Use medium preset for better compatibility
+			"preset":   "veryfast",   // Use veryfast preset for better compatibility
 			"crf":      "28",         // Higher CRF value = lower bitrate (default is 23, 28 gives significant reduction)
-			"c:a":      "aac",        // Use AAC codec for audio
-			"b:a":      "128k",       // Reduced audio bitrate
+			"c:a":      "copy",       // Use copy codec for audio
 			"movflags": "+faststart", // Optimize for web playback
 			"pix_fmt":  "yuv420p",    // Pixel format for maximum compatibility
 		}).
@@ -93,24 +105,44 @@ func ProcessVideoWithBitrateReduction(inputPath string) (string, bool, error) {
 	// Log the actual command that will be executed
 	cmdString := ffmpegCmd.String()
 	logrus.Infof("Running FFmpeg command: %s", cmdString)
-
 	// Run the command
 	err = ffmpegCmd.Run()
 	if err != nil {
 		logrus.Errorf("Failed to process video: %v", err)
 		// Try a more basic conversion as a fallback
 		logrus.Infof("Trying fallback conversion with simpler settings")
+
+		// Get input file extension
+		inputExt := strings.ToLower(filepath.Ext(inputPath))
+
+		// Fallback options based on file type
+		audioOpts := []string{"-c:a", "aac", "-b:a", "96k"}
+
+		// For WebM, MKV, and other formats that might have VP8/VP9/AV1 video and Opus/Vorbis audio
+		if inputExt == ".webm" || inputExt == ".mkv" || inputExt == ".ogg" || inputExt == ".ogv" {
+			logrus.Infof("Using special handling for %s format", inputExt)
+			// Force audio transcoding for these formats
+			audioOpts = []string{"-c:a", "aac", "-b:a", "96k"}
+		}
 		// Fallback with simpler settings but still maintaining resolution
-		fallbackCmd := exec.Command(ffmpegPath,
+		fallbackArgs := []string{
 			"-i", inputPath,
 			"-t", "59",
 			"-c:v", "libx264",
 			"-preset", "ultrafast", // Faster encoding for compatibility
 			"-crf", "30", // Even higher CRF for more bitrate reduction
-			"-c:a", "aac",
-			"-b:a", "96k", // Lower audio bitrate
+		}
+
+		// Add audio options
+		fallbackArgs = append(fallbackArgs, audioOpts...)
+
+		// Add the remaining options
+		fallbackArgs = append(fallbackArgs,
 			"-pix_fmt", "yuv420p",
 			"-y", outputPath)
+
+		logrus.Infof("Fallback command args: %v", fallbackArgs)
+		fallbackCmd := exec.Command(ffmpegPath, fallbackArgs...)
 
 		logrus.Infof("Running fallback FFmpeg command")
 		fallbackOutput, fallbackErr := fallbackCmd.CombinedOutput()

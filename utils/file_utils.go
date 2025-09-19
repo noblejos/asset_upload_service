@@ -139,8 +139,12 @@ func GetVideoMetadata(filePath string) (Dimensions, error) {
 	}
 
 	// Parse width and height
-	cmd := exec.Command("ffprobe", "-v", "error", "-select_streams", "v:0",
-		"-show_entries", "stream=width,height,duration", "-of", "csv=p=0", filePath)
+	cmd := exec.Command("ffprobe", "-v", "error",
+		"-select_streams", "v:0",
+		"-show_entries", "stream=width,height,duration",
+		"-of", "csv=p=0",
+		"-read_intervals", "%0:5", // Only analyze first 5 seconds
+		filePath)
 	out, err := cmd.Output()
 	if err != nil {
 
@@ -217,211 +221,6 @@ func DetectVideoQuality(filePath string) (string, int, int, error) {
 	return quality, width, height, nil
 }
 
-func ProcessVideo(inputPath string) (string, bool, error) {
-	// First check if it's a video
-	if !IsVideoFile(inputPath) {
-		// Use filetype library to check if it's a video
-		file, err := os.Open(inputPath)
-		if err != nil {
-			logrus.Errorf("Failed to open file for type detection: %v", err)
-			return "", false, fmt.Errorf("failed to open file for type detection: %w", err)
-		}
-		defer file.Close()
-
-		// Read enough bytes for detection
-		head := make([]byte, 261)
-		if _, err := file.Read(head); err != nil {
-			logrus.Errorf("Failed to read file header: %v", err)
-			return "", false, fmt.Errorf("failed to read file header: %w", err)
-		}
-
-		kind, err := filetype.Match(head)
-		if err != nil || !strings.HasPrefix(kind.MIME.Value, "video/") {
-			// Not a video or unrecognized format
-			logrus.Infof("Not a video or unrecognized format. MIME type: %s", kind.MIME.Value)
-			return inputPath, false, nil
-		}
-	}
-
-	// Log file information
-	fileInfo, err := os.Stat(inputPath)
-	if err != nil {
-		logrus.Warnf("Could not stat file: %v", err)
-	} else {
-		logrus.Infof("Processing file: %s, size: %d bytes", inputPath, fileInfo.Size())
-	}
-
-	// 1. Detect quality and dimensions
-	_, width, height, err := DetectVideoQuality(inputPath)
-	if err != nil {
-		logrus.Warnf("Failed to detect video quality: %v, proceeding with conversion anyway", err)
-	}
-
-	// Generate output path
-	outputPath := strings.TrimSuffix(inputPath, filepath.Ext(inputPath)) + "_processed.mp4"
-
-	// Check if FFmpeg is available
-	ffmpegPath, err := exec.LookPath("ffmpeg")
-	if err != nil {
-		logrus.Errorf("FFmpeg not found: %v", err)
-		return "", false, fmt.Errorf("ffmpeg is not installed: %w", err)
-	}
-	logrus.Infof("Using FFmpeg at path: %s", ffmpegPath)
-
-	// Set target resolution to exactly 480p (854x480) while maintaining aspect ratio
-	// This is the standard 480p resolution with 16:9 aspect ratio
-	const targetHeight = 480
-	// Calculate width maintaining aspect ratio with height=480
-	var targetWidth int
-
-	if width > 0 && height > 0 {
-		// Calculate original aspect ratio
-		origAspectRatio := float64(width) / float64(height)
-		targetWidth = int(float64(targetHeight) * origAspectRatio)
-		// Ensure width is even (required by some codecs)
-		targetWidth = targetWidth + targetWidth%2
-		logrus.Infof("Original aspect ratio: %f, calculated target width: %d", origAspectRatio, targetWidth)
-	} else {
-		// Default to 16:9 aspect ratio if we couldn't get the original dimensions
-		targetWidth = 854
-		logrus.Infof("Using default 16:9 aspect ratio (854x480)")
-	}
-
-	logrus.Infof("Processing video from %s to %s (target resolution: %dx%d)",
-		inputPath, outputPath, targetWidth, targetHeight)
-	// Try a simpler ffmpeg command first to check if the input file is valid
-	probeCmd := exec.Command(ffmpegPath, "-i", inputPath, "-f", "null", "-")
-	probeOutput, probeErr := probeCmd.CombinedOutput()
-	if probeErr != nil {
-		logrus.Errorf("FFmpeg probe failed: %v, output: %s", probeErr, string(probeOutput))
-		return "", false, fmt.Errorf("failed to process video - input file may be corrupted: %w", probeErr)
-	}
-	// Get standard aspect ratios from resizer service
-	resizer := services.NewResizer(90)
-	formats := services.GetFormats()
-
-	// Find the closest standard aspect ratio
-	originalRatio := float64(0)
-	if width > 0 && height > 0 {
-		originalRatio = float64(width) / float64(height)
-	} else {
-		originalRatio = float64(16) / float64(9) // Default to 16:9
-	}
-
-	var closestFormat services.MediaFormat
-	minDiff := math.MaxFloat64
-
-	for _, format := range formats {
-		diff := math.Abs(originalRatio - format.AspectRatio)
-		if diff < minDiff {
-			minDiff = diff
-			closestFormat = format
-		}
-	}
-
-	standardFormat := resizer.DetectFormat(width, height)
-	logrus.Infof("Closest standard format: %s (ratio: %s)", standardFormat, closestFormat.FormattedRatio)
-	// We're not changing the resolution, so we don't need to calculate standard dimensions
-	// This code is left in place but commented out for reference
-	/*
-		var standardWidth, standardHeight int
-
-		if closestFormat.FormattedRatio == "1:1" { // Square
-			standardWidth = 480
-			standardHeight = 480
-		} else if closestFormat.FormattedRatio == "4:5" { // Portrait
-			standardWidth = 384
-			standardHeight = 480
-		} else if closestFormat.FormattedRatio == "9:16" { // Story/vertical video
-			standardWidth = 270
-			standardHeight = 480
-		} else { // Landscape (1.91:1 or others)
-			standardWidth = 854 // 16:9 at 480p
-			standardHeight = 480
-		}
-
-		// Calculate crop-scale parameters to avoid black bars
-		if originalRatio > 0 && width > 0 && height > 0 {
-			targetAspectRatio := float64(standardWidth) / float64(standardHeight)
-
-			if originalRatio > targetAspectRatio {
-				// Original is wider than target - need to crop width
-				// Scale to match target height, then crop sides
-				vfCmd = fmt.Sprintf("scale=-1:%d,crop=%d:%d:(iw-ow)/2:0",
-					standardHeight, standardWidth, standardHeight)
-			} else if originalRatio < targetAspectRatio {
-				// Original is taller than target - need to crop height
-				// Scale to match target width, then crop top/bottom
-				vfCmd = fmt.Sprintf("scale=%d:-1,crop=%d:%d:0:(ih-oh)/2",
-					standardWidth, standardWidth, standardHeight)
-			} else {
-				// Aspect ratios match, just scale
-				vfCmd = fmt.Sprintf("scale=%d:%d", standardWidth, standardHeight)
-			}
-		} else {
-			// Default scale if we can't determine aspect ratio
-			vfCmd = fmt.Sprintf("scale=%d:%d", standardWidth, standardHeight)
-		}
-	*/ // Process video with ffmpeg to reduce bitrate while maintaining original resolution
-	logrus.Infof("Starting video processing with bitrate reduction")
-
-	// Build the ffmpeg command that maintains resolution but reduces bitrate
-	ffmpegCmd := ffmpeg.Input(inputPath).
-		Output(outputPath, ffmpeg.KwArgs{
-			"t":        "59",         // Cut to 59 seconds
-			"c:v":      "libx264",    // Use H.264 codec for video
-			"preset":   "medium",     // Use medium preset for better compatibility
-			"crf":      "28",         // Higher CRF value = lower bitrate (default is 23, 28 gives significant reduction)
-			"c:a":      "aac",        // Use AAC codec for audio
-			"b:a":      "128k",       // Reduced audio bitrate
-			"movflags": "+faststart", // Optimize for web playback
-			"pix_fmt":  "yuv420p",    // Pixel format for maximum compatibility
-		}).
-		OverWriteOutput()
-
-	// Log the actual command that will be executed
-	cmdString := ffmpegCmd.String()
-	logrus.Infof("Running FFmpeg command: %s", cmdString)
-	// Run the command
-	err = ffmpegCmd.Run()
-	if err != nil {
-		logrus.Errorf("Failed to process video: %v", err) // Try a more basic conversion as a fallback - just reduce bitrate without any scaling
-		logrus.Infof("Trying fallback conversion with simpler settings")
-
-		// Use a simpler approach without scaling/cropping for the fallback
-		fallbackCmd := exec.Command(ffmpegPath,
-			"-i", inputPath,
-			"-t", "59", // Cut to 59 seconds
-			"-c:v", "libx264", // Use H.264 codec for video
-			"-preset", "ultrafast", // Use fastest preset for better compatibility
-			"-crf", "30", // Higher CRF value = even lower bitrate
-			"-c:a", "aac", // Use AAC codec for audio
-			"-b:a", "96k", // Lower audio bitrate
-			"-pix_fmt", "yuv420p", // Pixel format for maximum compatibility
-			"-y", outputPath)
-
-		logrus.Infof("Running fallback FFmpeg command with higher compression")
-		fallbackOutput, fallbackErr := fallbackCmd.CombinedOutput()
-		if fallbackErr != nil {
-			logrus.Errorf("Fallback conversion also failed: %v, output: %s", fallbackErr, string(fallbackOutput))
-			return "", false, fmt.Errorf("failed to process video (all methods): %w", fallbackErr)
-		}
-		logrus.Infof("Fallback conversion with higher compression succeeded")
-		return outputPath, true, nil
-	}
-
-	// Check if the output file exists and has non-zero size
-	if outInfo, err := os.Stat(outputPath); err != nil {
-		logrus.Errorf("Output file doesn't exist after processing: %v", err)
-		return "", false, fmt.Errorf("output file not created: %w", err)
-	} else if outInfo.Size() == 0 {
-		logrus.Errorf("Output file has zero size")
-		return "", false, fmt.Errorf("output file has zero size")
-	}
-	logrus.Infof("Video processing with bitrate reduction completed successfully")
-	return outputPath, true, nil
-}
-
 // GetImageDimensions extracts width and height from image bytes
 func GetImageDimensions(buffer []byte) (struct{ Width, Height int }, error) {
 	img, _, err := image.DecodeConfig(bytes.NewReader(buffer))
@@ -453,6 +252,52 @@ func gcd(a, b int) int {
 		a, b = b, a%b
 	}
 	return a
+}
+
+// TrimVideoTo30Seconds trims a video file to the first 30 seconds using ffmpeg
+func TrimVideoTo30Seconds(inputPath, outputPath string) error {
+	logrus.Infof("Trimming video to 30 seconds: %s -> %s", inputPath, outputPath)
+
+	// Check if FFmpeg is available
+	ffmpegPath, err := exec.LookPath("ffmpeg")
+	if err != nil {
+		logrus.Errorf("FFmpeg not found: %v", err)
+		return fmt.Errorf("ffmpeg is not installed: %w", err)
+	}
+	logrus.Infof("Using FFmpeg at path: %s", ffmpegPath)
+
+	// Build ffmpeg command to trim video to first 30 seconds
+	// -i: input file
+	// -t 30: duration of 30 seconds
+	// -c copy: copy streams without re-encoding (faster)
+	// -avoid_negative_ts make_zero: handle timestamp issues
+	cmd := exec.Command(ffmpegPath, 
+		"-i", inputPath,
+		"-t", "30",
+		"-c", "copy",
+		"-avoid_negative_ts", "make_zero",
+		"-y", // overwrite output file if it exists
+		outputPath,
+	)
+
+	// Capture output for debugging
+	var stderr bytes.Buffer
+	cmd.Stderr = &stderr
+
+	logrus.Infof("Running ffmpeg command: %s", cmd.String())
+	
+	if err := cmd.Run(); err != nil {
+		logrus.Errorf("FFmpeg command failed: %v, stderr: %s", err, stderr.String())
+		return fmt.Errorf("ffmpeg failed to trim video: %w, stderr: %s", err, stderr.String())
+	}
+
+	// Verify the output file was created
+	if _, err := os.Stat(outputPath); os.IsNotExist(err) {
+		return fmt.Errorf("trimmed video file was not created: %s", outputPath)
+	}
+
+	logrus.Infof("Successfully trimmed video to 30 seconds: %s", outputPath)
+	return nil
 }
 
 // GetVideoAspectRatioFromURL retrieves the aspect ratio of a video from a URL (such as S3)

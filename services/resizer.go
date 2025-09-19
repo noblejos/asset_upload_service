@@ -4,7 +4,6 @@ import (
 	"bytes"
 	"fmt"
 	"math"
-	"os"
 	"sync"
 
 	"github.com/disintegration/imaging"
@@ -88,43 +87,9 @@ func (r *Resizer) ResizeImage(buffer []byte, formatName string) ([]byte, error) 
 	return buf.Bytes(), nil
 }
 
-func (r *Resizer) ProcessVideo(inputPath, outputPath, format string) error {
-	// Bypass FFmpeg processing: just copy the input file to the output path
-	input, err := os.ReadFile(inputPath)
-	if err != nil {
-		return fmt.Errorf("failed to read input video: %w", err)
-	}
-	err = os.WriteFile(outputPath, input, 0644)
-	if err != nil {
-		return fmt.Errorf("failed to write output video: %w", err)
-	}
-	return nil
-}
-
-// Check for available hardware acceleration
-func (r *Resizer) checkHardwareAcceleration() bool {
-	// Implement actual hardware detection
-	return false // Default to false, implement based on your environment
-}
-
 // Buffer pool to reduce allocations
 var pool = sync.Pool{
 	New: func() interface{} {
 		return bytes.NewBuffer(make([]byte, 0, 1024))
 	},
-}
-
-func (r *Resizer) calculateCRF() int {
-
-	return 28
-}
-
-// Helper: Validate and get the target format
-func (r *Resizer) validateFormat(format string) (MediaFormat, error) {
-	for _, f := range formats {
-		if f.FormattedRatio == format {
-			return f, nil
-		}
-	}
-	return MediaFormat{}, fmt.Errorf("invalid format name: %s", format)
 }

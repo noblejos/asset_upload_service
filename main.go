@@ -50,6 +50,9 @@ func main() {
 	// Standard multipart form upload endpoint
 	router.POST("/upload", uploadHandler.HandleUpload)
 
+	// Simple upload endpoint - processes images normally, extracts aspect ratio for videos
+	router.POST("/upload/simple", uploadHandler.HandleSimpleUpload)
+
 	// Endpoint to retrieve video aspect ratio from AWS S3
 	router.GET("/video/aspect-ratio", uploadHandler.GetVideoAspectRatioHandler)
 

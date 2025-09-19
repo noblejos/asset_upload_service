@@ -122,8 +122,7 @@ func (h *UploadHandler) HandleUpload(c *gin.Context) { // Parse form data (10MB 
 		}
 		defer os.Remove(tempPath) // Get path for metadata extraction (will be either original or processed)
 		metadataPath := tempPath
-		var wasProcessed bool
-		// Process video: reduce bitrate while maintaining original resolution
+		var wasProcessed bool // Process video: reduce bitrate while maintaining original resolution and convert to MP4
 		processedPath, processed, err := utils.ProcessVideoWithBitrateReduction(tempPath)
 		if err != nil {
 			// Log the error for debugging
@@ -135,9 +134,9 @@ func (h *UploadHandler) HandleUpload(c *gin.Context) { // Parse form data (10MB 
 				fmt.Println("Skipping processing for MP4 file that couldn't be converted")
 				wasProcessed = false
 			} else {
-				// For other formats, return error to client
+				// For other formats that aren't MP4, we must convert them
 				c.JSON(http.StatusInternalServerError, models.UploadResponse{
-					Message:  "Failed to process video: " + err.Error(),
+					Message:  "Failed to process non-MP4 video: " + err.Error(),
 					FileType: fileType,
 					FileName: header.Filename,
 				})
@@ -272,10 +271,17 @@ func (h *UploadHandler) uploadToS3(file *os.File, fileName string, config models
 		return "", fmt.Errorf("failed to create AWS session: %v", err)
 	}
 
-	// Create an uploader with the session and default options
-	uploader := s3manager.NewUploader(sess)
+	// Create an uploader with optimized settings for better performance
+	uploader := s3manager.NewUploader(sess, func(u *s3manager.Uploader) {
+		// Increase part size to 10MB for better performance with larger files
+		u.PartSize = 10 * 1024 * 1024 // 10MB
+		// Increase concurrency for faster uploads
+		u.Concurrency = 5
+	})
 
-	// Upload the file to S3
+	logrus.Infof("Starting S3 upload for file: %s", fileName)
+
+	// Upload the file to S3 with optimized settings
 	result, err := uploader.Upload(&s3manager.UploadInput{
 		Bucket: aws.String(config.S3BucketName),
 		Key:    aws.String(fileName),
@@ -286,41 +292,249 @@ func (h *UploadHandler) uploadToS3(file *os.File, fileName string, config models
 		return "", fmt.Errorf("failed to upload file: %v", err)
 	}
 
+	logrus.Infof("Successfully uploaded file to S3: %s", result.Location)
 	return result.Location, nil
 }
 
-// getImageDimensions moved to utils package to avoid duplication
+// HandleSimpleUpload processes images normally but only extracts aspect ratio for videos
+func (h *UploadHandler) HandleSimpleUpload(c *gin.Context) {
+	// Log Content-Type header to debug issues with multipart form parsing
+	contentType := c.GetHeader("Content-Type")
+	logrus.Infof("Received request with Content-Type: %s", contentType)
 
-// GetVideoAspectRatioHandler retrieves the aspect ratio from a video URL (typically on S3)
-// func (h *UploadHandler) GetVideoAspectRatioHandler(c *gin.Context) {
-// 	// Get the video URL from the query parameter
-// 	videoURL := c.Query("url")
-// 	if videoURL == "" {
-// 		c.JSON(http.StatusBadRequest, gin.H{
-// 			"error": "Missing required 'url' parameter",
-// 		})
-// 		return
-// 	}
+	// Handle special case when content type might have issues with boundary
+	if !strings.Contains(contentType, "boundary=") {
+		logrus.Warnf("Content-Type doesn't contain boundary parameter, trying to handle anyway")
+	}
 
-// 	// Validate the URL
-// 	_, err := url.ParseRequestURI(videoURL)
-// 	if err != nil {
-// 		c.JSON(http.StatusBadRequest, gin.H{
-// 			"error": "Invalid URL format",
-// 		})
-// 		return
-// 	}
+	// Try to parse the multipart form
+	if err := c.Request.ParseMultipartForm(10 << 20); err != nil {
+		logrus.Errorf("Failed to parse multipart form: %v", err)
+		c.JSON(http.StatusBadRequest, models.UploadResponse{
+			Message: "Failed to parse multipart form: " + err.Error(),
+		})
+		return
+	}
 
-// 	// Get the aspect ratio from the URL
-// 	aspectRatio, err := utils.GetVideoAspectRatioFromURL(videoURL)
-// 	if err != nil {
-// 		logrus.Errorf("Failed to get aspect ratio: %v", err)
-// 		c.JSON(http.StatusInternalServerError, gin.H{
-// 			"error": fmt.Sprintf("Failed to get aspect ratio: %v", err),
-// 		})
-// 		return
-// 	}
+	resizer := services.NewResizer(90)
+	awsConfig := models.UploadRequest{
+		AWSAccessKeyID:     os.Getenv("AWS_ACCESS_KEY_ID"),
+		AWSSecretAccessKey: os.Getenv("AWS_SECRET_ACCESS_KEY"),
+		AWSRegion:          os.Getenv("AWS_REGION"),
+		S3BucketName:       os.Getenv("AWS_S3_BUCKET"),
+	}
 
-// 	// Return the aspect ratio
-// 	c.JSON(http.StatusOK, aspectRatio)
-// }
+	// Validate AWS credentials
+	if awsConfig.AWSAccessKeyID == "" || awsConfig.AWSSecretAccessKey == "" ||
+		awsConfig.AWSRegion == "" || awsConfig.S3BucketName == "" {
+		c.JSON(http.StatusBadRequest, models.UploadResponse{
+			Message: "AWS credentials and configuration are required",
+		})
+		return
+	}
+
+	// Get the file from form data
+	file, header, err := c.Request.FormFile("file")
+	if err != nil {
+		c.JSON(http.StatusBadRequest, models.UploadResponse{
+			Message: "Failed to get file from form data: " + err.Error(),
+		})
+		return
+	}
+	defer file.Close()
+
+	// Read file into memory
+	fileBytes, err := io.ReadAll(file)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, models.UploadResponse{
+			Message: "Failed to read file: " + err.Error(),
+		})
+		return
+	}
+
+	// Get file type without processing
+	fileType := http.DetectContentType(fileBytes)
+	var fileInfo *models.FileInfo
+	var message string
+
+	if strings.HasPrefix(fileType, "image/") {
+		// Process images the same way as the original endpoint
+		dimensions, err := utils.GetImageDimensions(fileBytes)
+		if err != nil {
+			c.JSON(http.StatusInternalServerError, models.UploadResponse{
+				Message: "Failed to get image dimensions: " + err.Error(),
+			})
+			return
+		}
+
+		// Calculate original aspect ratio
+		ratio := float64(dimensions.Width) / float64(dimensions.Height)
+
+		// Get the closest standard aspect ratio without resizing
+		standardFormat := resizer.DetectFormat(dimensions.Width, dimensions.Height)
+
+		num, den := utils.FloatToRatio(ratio, 100)
+		ratioStr := fmt.Sprintf("%d:%d", num, den)
+
+		fileInfo = &models.FileInfo{
+			FileType:      "image",
+			Width:         dimensions.Width,
+			Height:        dimensions.Height,
+			OriginalRatio: ratioStr,
+			MatchedFormat: standardFormat,
+		}
+		message = "Image uploaded successfully with metadata extracted"
+
+	} else if strings.HasPrefix(fileType, "video/") || utils.IsVideoFile(header.Filename) {
+		// For videos, extract aspect ratio and trim to first 30 seconds
+		tempPath := filepath.Join(os.TempDir(), header.Filename)
+		if err := os.WriteFile(tempPath, fileBytes, 0644); err != nil {
+			c.JSON(http.StatusInternalServerError, models.UploadResponse{
+				Message: "Failed to create temp video file: " + err.Error(),
+			})
+			return
+		}
+		defer os.Remove(tempPath)
+
+		// Get metadata from the original video
+		dimensions, err := utils.GetVideoMetadata(tempPath)
+		if err != nil {
+			// If we can't get metadata, continue with basic info
+			fileInfo = &models.FileInfo{
+				FileType: "video",
+			}
+			logrus.Warnf("Failed to extract video metadata: %v", err)
+		} else {
+			// Calculate original aspect ratio
+			ratio := float64(dimensions.Width) / float64(dimensions.Height)
+			standardFormat := resizer.DetectFormat(dimensions.Width, dimensions.Height)
+
+			num, den := utils.FloatToRatio(ratio, 100)
+			ratioStr := fmt.Sprintf("%d:%d", num, den)
+
+			fileInfo = &models.FileInfo{
+				FileType:      "video",
+				Width:         dimensions.Width,
+				Height:        dimensions.Height,
+				OriginalRatio: ratioStr,
+				MatchedFormat: standardFormat,
+				Duration:      dimensions.Duration,
+			}
+		}
+
+		// Trim video to first 30 seconds using ffmpeg
+		trimmedPath := filepath.Join(os.TempDir(), "trimmed_"+header.Filename)
+		defer os.Remove(trimmedPath)
+
+		if err := utils.TrimVideoTo30Seconds(tempPath, trimmedPath); err != nil {
+			logrus.Errorf("Failed to trim video: %v", err)
+			c.JSON(http.StatusInternalServerError, models.UploadResponse{
+				Message: "Failed to trim video: " + err.Error(),
+			})
+			return
+		}
+
+		// For videos, upload the trimmed file directly to S3 (streaming)
+		trimmedFile, err := os.Open(trimmedPath)
+		if err != nil {
+			c.JSON(http.StatusInternalServerError, models.UploadResponse{
+				Message: "Failed to open trimmed video: " + err.Error(),
+			})
+			return
+		}
+		defer trimmedFile.Close()
+
+		// Get file size for response
+		trimmedFileInfo, err := trimmedFile.Stat()
+		if err != nil {
+			c.JSON(http.StatusInternalServerError, models.UploadResponse{
+				Message: "Failed to get trimmed video info: " + err.Error(),
+			})
+			return
+		}
+
+		fileURL, err := h.uploadToS3(trimmedFile, header.Filename, awsConfig)
+		if err != nil {
+			c.JSON(http.StatusInternalServerError, models.UploadResponse{
+				Message: "Failed to upload trimmed video to S3: " + err.Error(),
+			})
+			return
+		}
+
+		response := models.UploadResponse{
+			FileName:      header.Filename,
+			FileURL:       fileURL,
+			FileType:      fileInfo.FileType,
+			FileSize:      trimmedFileInfo.Size(),
+			Width:         fileInfo.Width,
+			Height:        fileInfo.Height,
+			OriginalRatio: fileInfo.OriginalRatio,
+			MatchedFormat: fileInfo.MatchedFormat,
+			AspectRatio:   fileInfo.OriginalRatio,
+			Duration:      fileInfo.Duration,
+			Message:       "Video trimmed to 30 seconds and uploaded successfully with aspect ratio extracted",
+		}
+
+		c.JSON(http.StatusOK, response)
+		return
+
+	} else {
+		fileInfo = &models.FileInfo{
+			FileType: fileType,
+		}
+		message = "File uploaded successfully"
+	}
+
+	// Upload original file to S3 (for images and other files)
+	tempFile, err := os.CreateTemp("", "upload-*")
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, models.UploadResponse{
+			Message: "Failed to create temporary file: " + err.Error(),
+		})
+		return
+	}
+	defer os.Remove(tempFile.Name())
+	defer tempFile.Close()
+
+	// Write original file bytes to temp file
+	if _, err := tempFile.Write(fileBytes); err != nil {
+		c.JSON(http.StatusInternalServerError, models.UploadResponse{
+			Message: "Failed to write to temporary file: " + err.Error(),
+		})
+		return
+	}
+
+	// Seek to beginning of file for reading
+	if _, err := tempFile.Seek(0, 0); err != nil {
+		c.JSON(http.StatusInternalServerError, models.UploadResponse{
+			Message: "Failed to seek temporary file: " + err.Error(),
+		})
+		return
+	}
+
+	fileURL, err := h.uploadToS3(tempFile, header.Filename, awsConfig)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, models.UploadResponse{
+			Message: "Failed to upload to S3: " + err.Error(),
+		})
+		return
+	}
+
+	response := models.UploadResponse{
+		FileName:      header.Filename,
+		FileURL:       fileURL,
+		FileType:      fileInfo.FileType,
+		FileSize:      int64(len(fileBytes)),
+		Width:         fileInfo.Width,
+		Height:        fileInfo.Height,
+		OriginalRatio: fileInfo.OriginalRatio,
+		MatchedFormat: fileInfo.MatchedFormat,
+		AspectRatio:   fileInfo.OriginalRatio,
+		Duration:      fileInfo.Duration,
+		Message:       message,
+	}
+
+	c.JSON(http.StatusOK, response)
+}
+
+// Note: getImageDimensions moved to utils package to avoid duplication
