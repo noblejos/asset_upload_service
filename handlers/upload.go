@@ -1,12 +1,14 @@
 package handlers
 
 import (
+	"crypto/tls"
 	"fmt"
 	"io"
 	"net/http"
 	"os"
 	"path/filepath"
 	"strings"
+	"time"
 
 	"github.com/asset_upload_service/models"
 	"github.com/asset_upload_service/services"
@@ -258,7 +260,24 @@ func (h *UploadHandler) HandleUpload(c *gin.Context) { // Parse form data (10MB 
 }
 
 func (h *UploadHandler) uploadToS3(file *os.File, fileName string, config models.UploadRequest) (string, error) {
-	// Create AWS session
+	// Create a custom HTTP client with TLS configuration to handle certificate issues on Windows
+	httpClient := &http.Client{
+		Transport: &http.Transport{
+			TLSClientConfig: &tls.Config{
+				InsecureSkipVerify: false,
+				// Use system's root CAs and handle certificate verification properly
+				RootCAs:            nil, // nil means use system's root CA set
+				ServerName:         "",  // Let Go handle server name verification
+				MinVersion:         tls.VersionTLS12,
+				MaxVersion:         tls.VersionTLS13,
+			},
+			// Additional transport settings for better connectivity
+			DisableKeepAlives: false,
+			IdleConnTimeout:   30 * time.Second,
+		},
+	}
+
+	// Create AWS session with custom HTTP client
 	sess, err := session.NewSession(&aws.Config{
 		Region: aws.String(config.AWSRegion),
 		Credentials: credentials.NewStaticCredentials(
@@ -266,6 +285,7 @@ func (h *UploadHandler) uploadToS3(file *os.File, fileName string, config models
 			config.AWSSecretAccessKey,
 			"",
 		),
+		HTTPClient: httpClient,
 	})
 	if err != nil {
 		return "", fmt.Errorf("failed to create AWS session: %v", err)
